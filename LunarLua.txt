@@ -1,0 +1,2114 @@
+--// LunarLua Half-Dock UI V22
+--// Animations only
+--// No emotes
+--// No startup preload
+--// No page switcher
+--// Animation catalog auto-loads when Animations tab opens
+--// Uses game:GetObjects resolver first, fallback guessing second
+--// Gray dummy viewport previews load one by one
+--// Panel height 800
+--// Single LocalScript
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local Library = {}
+
+local AnimationCache = {}
+local CurrentAnimationData = nil
+
+Library.Theme = {
+	PanelDark = Color3.fromRGB(28, 28, 28),
+	PanelLight = Color3.fromRGB(68, 68, 68),
+
+	CardDark = Color3.fromRGB(31, 31, 31),
+	CardLight = Color3.fromRGB(55, 55, 55),
+	CardHover = Color3.fromRGB(72, 72, 72),
+
+	TabDark = Color3.fromRGB(16, 16, 16),
+	TabHover = Color3.fromRGB(42, 42, 42),
+
+	Text = Color3.fromRGB(255, 255, 255),
+	Muted = Color3.fromRGB(185, 185, 185),
+
+	Font = Enum.Font.Gotham,
+	BoldFont = Enum.Font.GothamBold
+}
+
+local NotificationIcons = {
+	info = "rbxassetid://11780939099",
+	x = "rbxassetid://10002373478",
+	cross = "rbxassetid://10002373478",
+	check = "rbxassetid://11604833061"
+}
+
+do
+	local old = CoreGui:FindFirstChild("LunarLuaHalfDockUI") or PlayerGui:FindFirstChild("LunarLuaHalfDockUI")
+	if old then
+		old:Destroy()
+	end
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LunarLuaHalfDockUI"
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 999
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+pcall(function()
+	ScreenGui.Parent = CoreGui
+end)
+
+if not ScreenGui.Parent then
+	ScreenGui.Parent = PlayerGui
+end
+
+local function Tween(obj, info, props)
+	local t = TweenService:Create(obj, info, props)
+	t:Play()
+	return t
+end
+
+local function Corner(parent, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius or 8)
+	c.Parent = parent
+	return c
+end
+
+local function Stroke(parent, color, thickness, transparency)
+	local s = Instance.new("UIStroke")
+	s.Color = color or Color3.fromRGB(255, 255, 255)
+	s.Thickness = thickness or 1
+	s.Transparency = transparency or 0
+	s.Parent = parent
+	return s
+end
+
+local function Padding(parent, amount)
+	local p = Instance.new("UIPadding")
+	p.PaddingTop = UDim.new(0, amount)
+	p.PaddingBottom = UDim.new(0, amount)
+	p.PaddingLeft = UDim.new(0, amount)
+	p.PaddingRight = UDim.new(0, amount)
+	p.Parent = parent
+	return p
+end
+
+local function Gradient(parent, color1, color2, rotation)
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, color1),
+		ColorSequenceKeypoint.new(1, color2)
+	})
+	g.Rotation = rotation or 68
+	g.Parent = parent
+	return g
+end
+
+local function CreateCard(parent, height)
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, 0, 0, height or 64)
+	card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	card.BorderSizePixel = 0
+	card.Parent = parent
+
+	Corner(card, 12)
+	Gradient(card, Library.Theme.CardDark, Library.Theme.CardLight, 68)
+	Stroke(card, Color3.fromRGB(255, 255, 255), 1, 0.72)
+
+	return card
+end
+
+local function NormalizeAnimationId(id)
+	if not id then
+		return nil
+	end
+
+	id = tostring(id)
+
+	if id:find("rbxassetid://") then
+		return id
+	end
+
+	local numberId = id:match("%d+")
+	if numberId then
+		return "rbxassetid://" .. numberId
+	end
+
+	return nil
+end
+
+local function CreateGrayDummy(world)
+	local description = Instance.new("HumanoidDescription")
+
+	local dummy
+	local success = pcall(function()
+		dummy = Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R15)
+	end)
+
+	if not success or not dummy then
+		return nil
+	end
+
+	dummy.Name = "GrayPreviewDummy"
+
+	for _, item in ipairs(dummy:GetDescendants()) do
+		if item:IsA("Script") or item:IsA("LocalScript") or item:IsA("ModuleScript") then
+			item:Destroy()
+		elseif item:IsA("Accessory") or item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic") then
+			item:Destroy()
+		elseif item:IsA("BasePart") then
+			item.Anchored = false
+			item.CanCollide = false
+			item.CastShadow = false
+			item.Color = Color3.fromRGB(135, 135, 135)
+			item.Material = Enum.Material.SmoothPlastic
+		elseif item:IsA("Decal") or item:IsA("Texture") then
+			item.Transparency = 1
+		end
+	end
+
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	end
+
+	dummy.Parent = world
+	dummy:PivotTo(CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(180), 0))
+
+	return dummy
+end
+
+local function CreateViewport(parent)
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Name = "Preview"
+	viewport.AnchorPoint = Vector2.new(0, 0.5)
+	viewport.Position = UDim2.new(0, 13, 0.5, 0)
+	viewport.Size = UDim2.new(0, 78, 0, 78)
+	viewport.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+	viewport.BackgroundTransparency = 0.05
+	viewport.BorderSizePixel = 0
+	viewport.Ambient = Color3.fromRGB(180, 180, 180)
+	viewport.LightColor = Color3.fromRGB(255, 255, 255)
+	viewport.LightDirection = Vector3.new(-1, -1, -1)
+	viewport.ZIndex = 13
+	viewport.Parent = parent
+
+	Corner(viewport, 10)
+	Stroke(viewport, Color3.fromRGB(255, 255, 255), 1, 0.84)
+
+	local world = Instance.new("WorldModel")
+	world.Parent = viewport
+
+	local camera = Instance.new("Camera")
+	camera.CFrame = CFrame.new(Vector3.new(0, 2.35, 6.4), Vector3.new(0, 2.1, 0))
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	local label = Instance.new("TextLabel")
+	label.AnchorPoint = Vector2.new(0.5, 1)
+	label.Position = UDim2.new(0.5, 0, 1, -4)
+	label.Size = UDim2.new(1, -8, 0, 14)
+	label.BackgroundTransparency = 1
+	label.Font = Library.Theme.BoldFont
+	label.Text = "Loading"
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.TextSize = 9
+	label.ZIndex = 14
+	label.Parent = viewport
+
+	return viewport, world, label
+end
+
+local function PlayPreviewAnimation(dummy, animationId, label, text, seconds)
+	if not dummy or not dummy.Parent then
+		return
+	end
+
+	local humanoid = dummy:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return
+	end
+
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+
+	if label then
+		label.Text = text or "Preview"
+	end
+
+	local normalizedId = NormalizeAnimationId(animationId)
+	if not normalizedId then
+		task.wait(seconds or 2)
+		return
+	end
+
+	local animation = Instance.new("Animation")
+	animation.AnimationId = normalizedId
+
+	local track
+	local ok = pcall(function()
+		track = animator:LoadAnimation(animation)
+	end)
+
+	animation:Destroy()
+
+	if ok and track then
+		track.Looped = true
+		track.Priority = Enum.AnimationPriority.Action
+		track:Play(0.15)
+
+		task.wait(seconds or 2)
+
+		pcall(function()
+			track:Stop(0.15)
+			track:Destroy()
+		end)
+	else
+		task.wait(seconds or 2)
+	end
+end
+
+--// ============================================================
+--// NOTIFICATIONS
+--// ============================================================
+
+local IncomingNotification = false
+
+local NotificationSample = Instance.new("Frame")
+NotificationSample.Name = "NotificationSample"
+NotificationSample.AnchorPoint = Vector2.new(0.5, 0)
+NotificationSample.Position = UDim2.fromScale(0.5, -0.1)
+NotificationSample.Size = UDim2.new(0, 400, 0, 50)
+NotificationSample.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+NotificationSample.BorderSizePixel = 0
+NotificationSample.ClipsDescendants = true
+NotificationSample.Visible = false
+NotificationSample.Active = true
+NotificationSample.Parent = ScreenGui
+
+Corner(NotificationSample, 10)
+Gradient(NotificationSample, Color3.fromRGB(36, 36, 36), Color3.fromRGB(68, 68, 68), 68)
+
+local NotificationStroke = Stroke(NotificationSample, Color3.fromRGB(255, 255, 255), 1.6, 0)
+NotificationStroke.Name = "UIStroke"
+
+local NotificationIcon = Instance.new("ImageLabel")
+NotificationIcon.Name = "ImageLabel"
+NotificationIcon.Image = NotificationIcons.info
+NotificationIcon.BackgroundTransparency = 1
+NotificationIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+NotificationIcon.Position = UDim2.new(0.1, 0, 0.5, 0)
+NotificationIcon.Size = UDim2.new(0.08, 0, 0.64, 0)
+NotificationIcon.ScaleType = Enum.ScaleType.Fit
+NotificationIcon.Parent = NotificationSample
+
+local NotificationText = Instance.new("TextLabel")
+NotificationText.Name = "TextLabel"
+NotificationText.BackgroundTransparency = 1
+NotificationText.AnchorPoint = Vector2.new(0.5, 0.5)
+NotificationText.Position = UDim2.new(0.5, 0, 0.5, 0)
+NotificationText.Size = UDim2.new(0.6, 0, 0.6, 0)
+NotificationText.Font = Library.Theme.Font
+NotificationText.TextColor3 = Color3.fromRGB(255, 255, 255)
+NotificationText.TextScaled = true
+NotificationText.TextWrapped = true
+NotificationText.TextXAlignment = Enum.TextXAlignment.Left
+NotificationText.Parent = NotificationSample
+
+local TextSizeConstraint = Instance.new("UITextSizeConstraint")
+TextSizeConstraint.MaxTextSize = 30
+TextSizeConstraint.Parent = NotificationText
+
+local NotificationClose = Instance.new("ImageButton")
+NotificationClose.Name = "Close"
+NotificationClose.Image = NotificationIcons.x
+NotificationClose.BackgroundTransparency = 1
+NotificationClose.AnchorPoint = Vector2.new(0.5, 0.5)
+NotificationClose.Position = UDim2.new(0.9, 0, 0.5, 0)
+NotificationClose.Size = UDim2.new(0.08, 0, 0.64, 0)
+NotificationClose.ScaleType = Enum.ScaleType.Fit
+NotificationClose.Parent = NotificationSample
+
+Corner(NotificationClose, 8)
+Stroke(NotificationClose, Color3.fromRGB(255, 255, 255), 1, 0)
+
+local NotificationScale = Instance.new("UIScale")
+NotificationScale.Scale = 0.8
+NotificationScale.Parent = NotificationSample
+
+local function MakeNotificationPullable(notif)
+	local dragging = false
+	local dragStart = nil
+	local originalPosition = nil
+	local returnTween = nil
+
+	local maxPullX = 18
+	local maxPullY = 10
+	local pullStrength = 0.12
+
+	local function clamp(value, minValue, maxValue)
+		return math.max(minValue, math.min(maxValue, value))
+	end
+
+	notif.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			originalPosition = notif.Position
+
+			if returnTween then
+				returnTween:Cancel()
+				returnTween = nil
+			end
+
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+
+					if notif and notif.Parent and not notif:GetAttribute("Closing") then
+						returnTween = Tween(
+							notif,
+							TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+							{ Position = originalPosition }
+						)
+					end
+				end
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and notif and notif.Parent and originalPosition then
+			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+				local delta = input.Position - dragStart
+
+				local pullX = clamp(delta.X * pullStrength, -maxPullX, maxPullX)
+				local pullY = clamp(delta.Y * pullStrength, -maxPullY, maxPullY)
+
+				notif.Position = UDim2.new(
+					originalPosition.X.Scale,
+					originalPosition.X.Offset + pullX,
+					originalPosition.Y.Scale,
+					originalPosition.Y.Offset + pullY
+				)
+			end
+		end
+	end)
+end
+
+function Library:Notify(message, color, icon)
+	IncomingNotification = true
+
+	task.spawn(function()
+		message = tostring(message)
+
+		local notif = NotificationSample:Clone()
+		notif.Parent = ScreenGui
+		notif.Position = UDim2.fromScale(0.5, -0.1)
+		notif.UIScale.Scale = 0.5
+		notif.Visible = true
+		notif.Name = message
+		notif:SetAttribute("close", false)
+		notif:SetAttribute("Closing", false)
+
+		MakeNotificationPullable(notif)
+
+		if color and typeof(color) == "Color3" then
+			notif.UIStroke.Color = color
+			notif.ImageLabel.ImageColor3 = color
+
+			local closeStroke = notif.Close:FindFirstChildOfClass("UIStroke")
+			if closeStroke then
+				closeStroke.Color = color
+			end
+		end
+
+		if icon then
+			if NotificationIcons[icon] then
+				notif.ImageLabel.Image = NotificationIcons[icon]
+			elseif tonumber(icon) then
+				notif.ImageLabel.Image = "rbxassetid://" .. tostring(tonumber(icon))
+			else
+				notif.ImageLabel.Image = tostring(icon)
+			end
+		end
+
+		notif.TextLabel.MaxVisibleGraphemes = 0
+		notif.TextLabel.Text = message
+
+		Tween(notif, TweenInfo.new(0.7, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			Position = UDim2.new(0.5, 0, 0, 10)
+		})
+
+		Tween(notif.UIScale, TweenInfo.new(0.8, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			Scale = 0.8
+		})
+
+		Tween(notif.TextLabel, TweenInfo.new(0.7, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			MaxVisibleGraphemes = #message
+		})
+
+		notif.Close.MouseButton1Click:Connect(function()
+			notif:SetAttribute("close", true)
+		end)
+
+		task.wait()
+		IncomingNotification = false
+
+		local startClock = os.clock()
+
+		repeat
+			task.wait()
+		until os.clock() - startClock > 5 or IncomingNotification or notif:GetAttribute("close")
+
+		if notif and notif.Parent then
+			notif:SetAttribute("Closing", true)
+
+			local finish = Tween(notif, TweenInfo.new(0.3, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+				Position = UDim2.fromScale(0.5, -0.1)
+			})
+
+			finish.Completed:Connect(function()
+				if notif then
+					notif:Destroy()
+				end
+			end)
+		end
+	end)
+end
+
+--// ============================================================
+--// DATA
+--// ============================================================
+
+local function FallbackAnimations()
+	return {
+		{
+			Name = "Robot",
+			Id = 80,
+			Description = "Fallback animation pack.",
+			BundledItems = {
+				{616086039, 616087089, 616088211, 616090535, 616091570, 616092998, 616095330}
+			}
+		},
+		{
+			Name = "Levitation",
+			Id = 103,
+			Description = "Fallback animation pack.",
+			BundledItems = {
+				{616003713, 616005863, 616006778, 616008936, 616010382, 616011509, 616013216}
+			}
+		},
+		{
+			Name = "Zombie",
+			Id = 115,
+			Description = "Fallback animation pack.",
+			BundledItems = {
+				{616156119, 616157476, 616158929, 616161997, 616163682, 616165109, 616168032}
+			}
+		},
+		{
+			Name = "Ninja",
+			Id = 75,
+			Description = "Fallback animation pack.",
+			BundledItems = {
+				{656114359, 656115606, 656117400, 656117878, 656118852, 656119721, 656121766}
+			}
+		}
+	}
+end
+
+local function FetchAllAnimationPacks()
+	local success, result = pcall(function()
+		local jsonContent = game:HttpGet("https://raw.githubusercontent.com/7yd7/sniper-Emote/refs/heads/test/AnimationSniper.json")
+		local decoded = HttpService:JSONDecode(jsonContent)
+		return decoded.data or decoded or {}
+	end)
+
+	if not success or type(result) ~= "table" then
+		return FallbackAnimations()
+	end
+
+	local packs = {}
+
+	for _, item in ipairs(result) do
+		local itemName = item.name or item.Name
+		local itemId = item.id or item.Id
+		local bundledItems = item.bundledItems or item.BundledItems
+
+		if itemId and itemName and bundledItems then
+			table.insert(packs, {
+				Name = tostring(itemName),
+				Id = tonumber(itemId) or tostring(itemId),
+				Description = "Preview and apply the " .. tostring(itemName) .. " animation pack.",
+				BundledItems = bundledItems
+			})
+		end
+	end
+
+	table.sort(packs, function(a, b)
+		return a.Name < b.Name
+	end)
+
+	if #packs == 0 then
+		return FallbackAnimations()
+	end
+
+	return packs
+end
+
+--// ============================================================
+--// ANIMATION APPLY / PREVIEW HELPERS
+--// ============================================================
+
+local function GuessCategoryFromName(name)
+	name = string.lower(tostring(name or ""))
+
+	if name:find("swimidle") or name:find("swim idle") then
+		return "swimidle"
+	elseif name:find("idle") then
+		return "idle"
+	elseif name:find("walk") then
+		return "walk"
+	elseif name:find("run") then
+		return "run"
+	elseif name:find("jump") then
+		return "jump"
+	elseif name:find("fall") then
+		return "fall"
+	elseif name:find("climb") then
+		return "climb"
+	elseif name:find("swim") then
+		return "swim"
+	end
+
+	return nil
+end
+
+local function GuessCategoryFromIndex(index)
+	local order = {"climb", "fall", "idle", "jump", "run", "swim", "walk"}
+	return order[index]
+end
+
+local function ExtractAssetId(value)
+	if typeof(value) == "table" then
+		return value.id or value.Id or value.assetId or value.AssetId or value.animationId or value.AnimationId
+	end
+
+	return value
+end
+
+local function ResolveAnimationMappings(itemData)
+	local cacheKey = tostring(itemData.Id or itemData.Name or "Unknown")
+
+	if AnimationCache[cacheKey] then
+		return AnimationCache[cacheKey]
+	end
+
+	local mappings = {}
+
+	local function addMapping(category, name, animationId)
+		if not category or not animationId then
+			return
+		end
+
+		local normalized = NormalizeAnimationId(animationId)
+		if not normalized then
+			return
+		end
+
+		table.insert(mappings, {
+			category = string.lower(tostring(category)),
+			name = tostring(name or category),
+			animationId = normalized
+		})
+	end
+
+	for _, assetIds in pairs(itemData.BundledItems or {}) do
+		local list = {}
+
+		if type(assetIds) == "table" then
+			for _, value in pairs(assetIds) do
+				table.insert(list, ExtractAssetId(value))
+			end
+		else
+			table.insert(list, ExtractAssetId(assetIds))
+		end
+
+		for index, assetId in ipairs(list) do
+			local cleanId = tostring(assetId or ""):match("%d+")
+
+			if cleanId then
+				local foundRealMappings = false
+
+				local success, objects = pcall(function()
+					return game:GetObjects("rbxassetid://" .. cleanId)
+				end)
+
+				if success and objects then
+					local function searchTree(parent, parentPath)
+						for _, child in ipairs(parent:GetChildren()) do
+							if child:IsA("Animation") then
+								local animationPath = parentPath .. "." .. child.Name
+								local pathParts = animationPath:split(".")
+
+								local category = pathParts[#pathParts - 1]
+								local name = pathParts[#pathParts]
+
+								if category and child.AnimationId and child.AnimationId ~= "" then
+									foundRealMappings = true
+									addMapping(category, name, child.AnimationId)
+								end
+							elseif #child:GetChildren() > 0 then
+								searchTree(child, parentPath .. "." .. child.Name)
+							end
+						end
+					end
+
+					for _, obj in ipairs(objects) do
+						searchTree(obj, obj.Name)
+
+						obj.Parent = workspace
+						task.delay(1, function()
+							if obj then
+								obj:Destroy()
+							end
+						end)
+					end
+				end
+
+				if not foundRealMappings then
+					local category = nil
+
+					pcall(function()
+						local info = MarketplaceService:GetProductInfo(tonumber(cleanId))
+						category = GuessCategoryFromName(info.Name)
+					end)
+
+					category = category or GuessCategoryFromIndex(index)
+
+					if category then
+						addMapping(category, category, "rbxassetid://" .. cleanId)
+					end
+				end
+			end
+		end
+	end
+
+	AnimationCache[cacheKey] = mappings
+	return mappings
+end
+
+local function ApplyAnimationPack(item)
+	local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animate = character:FindFirstChild("Animate")
+
+	if not humanoid then
+		Library:Notify("Humanoid not found.", Color3.fromRGB(255, 100, 100), "x")
+		return
+	end
+
+	if humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+		Library:Notify("Animation catalog needs R15.", Color3.fromRGB(255, 100, 100), "x")
+		return
+	end
+
+	if not animate then
+		Library:Notify("Animate script not found.", Color3.fromRGB(255, 100, 100), "x")
+		return
+	end
+
+	local mappings = ResolveAnimationMappings(item)
+
+	if #mappings == 0 then
+		Library:Notify("No animation IDs found.", Color3.fromRGB(255, 100, 100), "x")
+		return
+	end
+
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if animator then
+		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+			pcall(function()
+				track:Stop(0.12)
+			end)
+		end
+	end
+
+	for _, mapping in ipairs(mappings) do
+		if mapping.category and mapping.animationId then
+			local folder = animate:FindFirstChild(mapping.category)
+
+			if folder then
+				local exact = folder:FindFirstChild(mapping.name)
+
+				if exact and exact:IsA("Animation") then
+					exact.AnimationId = mapping.animationId
+				else
+					for _, animObj in ipairs(folder:GetChildren()) do
+						if animObj:IsA("Animation") then
+							animObj.AnimationId = mapping.animationId
+						end
+					end
+				end
+			end
+		end
+	end
+
+	CurrentAnimationData = item
+
+	animate.Disabled = true
+	task.wait(0.08)
+	animate.Disabled = false
+
+	humanoid.Jump = false
+
+	pcall(function()
+		humanoid:ChangeState(Enum.HumanoidStateType.Running)
+	end)
+
+	Library:Notify(item.Name .. " applied.", Color3.fromRGB(255, 255, 255), "check")
+end
+
+LocalPlayer.CharacterAdded:Connect(function(character)
+	if CurrentAnimationData then
+		task.wait(1.25)
+
+		if character and character.Parent then
+			ApplyAnimationPack(CurrentAnimationData)
+		end
+	end
+end)
+
+--// ============================================================
+--// UI LIBRARY
+--// ============================================================
+
+function Library:CreateHalfDock(options)
+	options = options or {}
+
+	local dock = {}
+	dock.Tabs = {}
+	dock.TabsVisible = false
+	dock.CurrentTab = nil
+	dock.LastOpenTab = nil
+	dock.VisibleTabs = options.VisibleTabs or 5
+	dock.PanelOpen = false
+	dock.ScrollOffset = 0
+
+	local Root = Instance.new("Frame")
+	Root.Name = "LunarLuaHalfDockRoot"
+	Root.AnchorPoint = Vector2.new(0, 0.5)
+	Root.Position = options.Position or UDim2.new(0, 0, 0.5, 0)
+	Root.Size = UDim2.new(0, 720, 0, 860)
+	Root.BackgroundTransparency = 1
+	Root.Parent = ScreenGui
+
+	local OrbArea = Instance.new("Frame")
+	OrbArea.Name = "OrbArea"
+	OrbArea.AnchorPoint = Vector2.new(0, 0.5)
+	OrbArea.Position = UDim2.new(0, 0, 0.5, 0)
+	OrbArea.Size = UDim2.new(0, 260, 0, 340)
+	OrbArea.BackgroundTransparency = 1
+	OrbArea.ClipsDescendants = false
+	OrbArea.Active = true
+	OrbArea.ZIndex = 100
+	OrbArea.Parent = Root
+
+	local OrbCenterX = -12
+
+	local OrbGlow = Instance.new("Frame")
+	OrbGlow.Name = "OrbGlow"
+	OrbGlow.AnchorPoint = Vector2.new(0.5, 0.5)
+	OrbGlow.Position = UDim2.new(0, OrbCenterX, 0.5, 0)
+	OrbGlow.Size = UDim2.new(0, 96, 0, 96)
+	OrbGlow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	OrbGlow.BackgroundTransparency = 0.92
+	OrbGlow.BorderSizePixel = 0
+	OrbGlow.ZIndex = 101
+	OrbGlow.Parent = OrbArea
+
+	Corner(OrbGlow, 999)
+
+	local Orb = Instance.new("TextButton")
+	Orb.Name = "Orb"
+	Orb.AnchorPoint = Vector2.new(0.5, 0.5)
+	Orb.Position = UDim2.new(0, OrbCenterX, 0.5, 0)
+	Orb.Size = UDim2.new(0, 82, 0, 82)
+	Orb.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	Orb.BorderSizePixel = 0
+	Orb.Text = ""
+	Orb.AutoButtonColor = false
+	Orb.Active = true
+	Orb.ZIndex = 120
+	Orb.Parent = OrbArea
+
+	Corner(Orb, 999)
+	Stroke(Orb, Color3.fromRGB(255, 255, 255), 2, 0.15)
+
+	local OrbScale = Instance.new("UIScale")
+	OrbScale.Scale = 1
+	OrbScale.Parent = Orb
+
+	local OrbHitbox = Instance.new("TextButton")
+	OrbHitbox.Name = "OrbHitbox"
+	OrbHitbox.AnchorPoint = Vector2.new(0, 0.5)
+	OrbHitbox.Position = UDim2.new(0, 0, 0.5, 0)
+	OrbHitbox.Size = UDim2.new(0, 64, 0, 104)
+	OrbHitbox.BackgroundTransparency = 1
+	OrbHitbox.BorderSizePixel = 0
+	OrbHitbox.Text = ""
+	OrbHitbox.AutoButtonColor = false
+	OrbHitbox.Active = true
+	OrbHitbox.ZIndex = 200
+	OrbHitbox.Parent = OrbArea
+
+	local TabLayer = Instance.new("Frame")
+	TabLayer.Name = "TabLayer"
+	TabLayer.BackgroundTransparency = 1
+	TabLayer.Size = UDim2.new(1, 0, 1, 0)
+	TabLayer.Active = true
+	TabLayer.ZIndex = 150
+	TabLayer.Parent = OrbArea
+
+	local Panel = Instance.new("Frame")
+	Panel.Name = "Panel"
+	Panel.AnchorPoint = Vector2.new(0, 0.5)
+	Panel.Position = UDim2.new(0, 260, 0.5, 0)
+	Panel.Size = UDim2.new(0, 0, 0, 800)
+	Panel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	Panel.BorderSizePixel = 0
+	Panel.ClipsDescendants = true
+	Panel.Visible = false
+	Panel.ZIndex = 10
+	Panel.Parent = Root
+
+	Corner(Panel, 4)
+	Gradient(Panel, Library.Theme.PanelDark, Library.Theme.PanelLight, 68)
+	Stroke(Panel, Color3.fromRGB(255, 255, 255), 1.5, 0.15)
+
+	local AccentBar = Instance.new("Frame")
+	AccentBar.Name = "AccentBar"
+	AccentBar.Size = UDim2.new(0, 4, 1, 0)
+	AccentBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	AccentBar.BackgroundTransparency = 0.1
+	AccentBar.BorderSizePixel = 0
+	AccentBar.ZIndex = 11
+	AccentBar.Parent = Panel
+
+	local Header = Instance.new("Frame")
+	Header.Name = "Header"
+	Header.BackgroundTransparency = 1
+	Header.Position = UDim2.new(0, 18, 0, 16)
+	Header.Size = UDim2.new(1, -36, 0, 34)
+	Header.ZIndex = 11
+	Header.Parent = Panel
+
+	local Title = Instance.new("TextLabel")
+	Title.BackgroundTransparency = 1
+	Title.Size = UDim2.new(1, 0, 0, 28)
+	Title.Font = Library.Theme.BoldFont
+	Title.Text = options.Title or "LunarLua"
+	Title.TextColor3 = Library.Theme.Text
+	Title.TextSize = 20
+	Title.TextXAlignment = Enum.TextXAlignment.Left
+	Title.ZIndex = 12
+	Title.Parent = Header
+
+	local PageTitle = Instance.new("TextLabel")
+	PageTitle.BackgroundTransparency = 1
+	PageTitle.Position = UDim2.new(0, 18, 0, 62)
+	PageTitle.Size = UDim2.new(1, -36, 0, 22)
+	PageTitle.Font = Library.Theme.BoldFont
+	PageTitle.Text = "Select a tab"
+	PageTitle.TextColor3 = Library.Theme.Text
+	PageTitle.TextSize = 14
+	PageTitle.TextXAlignment = Enum.TextXAlignment.Left
+	PageTitle.ZIndex = 11
+	PageTitle.Parent = Panel
+
+	local Content = Instance.new("ScrollingFrame")
+	Content.Name = "Content"
+	Content.BackgroundTransparency = 1
+	Content.BorderSizePixel = 0
+	Content.Position = UDim2.new(0, 16, 0, 92)
+	Content.Size = UDim2.new(1, -32, 1, -104)
+	Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+	Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	Content.ScrollBarThickness = 0
+	Content.ZIndex = 11
+	Content.Parent = Panel
+
+	local ContentLayout = Instance.new("UIListLayout")
+	ContentLayout.Padding = UDim.new(0, 8)
+	ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	ContentLayout.Parent = Content
+
+	Padding(Content, 2)
+
+	task.spawn(function()
+		while OrbGlow and OrbGlow.Parent do
+			OrbGlow.Size = UDim2.new(0, 88, 0, 88)
+			OrbGlow.BackgroundTransparency = 0.92
+
+			Tween(OrbGlow, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Size = UDim2.new(0, 120, 0, 120),
+				BackgroundTransparency = 1
+			})
+
+			task.wait(1.2)
+		end
+	end)
+
+	local function ClearContent()
+		for _, child in ipairs(Content:GetChildren()) do
+			if not child:IsA("UIListLayout") and not child:IsA("UIPadding") then
+				child:Destroy()
+			end
+		end
+	end
+
+	local function OpenPanel()
+		if dock.PanelOpen then
+			return
+		end
+
+		dock.PanelOpen = true
+		Panel.Visible = true
+
+		Tween(Panel, TweenInfo.new(0.34, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+			Size = UDim2.new(0, 360, 0, 800)
+		})
+	end
+
+	local function ClosePanel()
+		if not dock.PanelOpen then
+			return
+		end
+
+		dock.PanelOpen = false
+
+		local closeTween = Tween(Panel, TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
+			Size = UDim2.new(0, 0, 0, 800)
+		})
+
+		closeTween.Completed:Connect(function()
+			if not dock.PanelOpen then
+				Panel.Visible = false
+				PageTitle.Text = "Select a tab"
+				ClearContent()
+			end
+		end)
+
+		if dock.CurrentTab and dock.CurrentTab.Button then
+			dock.CurrentTab.Button.BackgroundColor3 = Library.Theme.TabDark
+			dock.CurrentTab.Button.TextColor3 = Library.Theme.Text
+			dock.CurrentTab.Glow.Transparency = 1
+
+			Tween(dock.CurrentTab.Scale, TweenInfo.new(0.14), {
+				Scale = 1
+			})
+		end
+
+		dock.CurrentTab = nil
+	end
+
+	local SlotAngles = {-72, -36, 0, 36, 72}
+	local Radius = 116
+
+	local function GetMaxScrollOffset()
+		return math.max(0, #dock.Tabs - dock.VisibleTabs)
+	end
+
+	local function GetTabPositionByAngle(angle)
+		local radians = math.rad(angle)
+		local x = OrbCenterX + math.cos(radians) * Radius
+		local y = math.sin(radians) * Radius
+		return UDim2.new(0, x, 0.5, y)
+	end
+
+	local function ForceActiveTab(tab)
+		if not tab or not tab.Button then
+			return
+		end
+
+		tab.Button.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		tab.Button.TextColor3 = Color3.fromRGB(0, 0, 0)
+		tab.Glow.Transparency = 0.08
+
+		Tween(tab.Scale, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Scale = 1.08
+		})
+	end
+
+	local function GetVisibleWindow()
+		local totalTabs = #dock.Tabs
+		local visibleCount = math.min(dock.VisibleTabs, totalTabs)
+		local startIndex = math.floor(dock.ScrollOffset) + 1
+
+		if totalTabs > visibleCount then
+			startIndex = math.clamp(startIndex, 1, totalTabs - visibleCount + 1)
+		else
+			startIndex = 1
+		end
+
+		local window = {}
+
+		for slot = 1, visibleCount do
+			local tabIndex = startIndex + slot - 1
+			local tab = dock.Tabs[tabIndex]
+
+			if tab then
+				table.insert(window, {
+					Tab = tab,
+					Index = tabIndex,
+					Slot = slot
+				})
+			end
+		end
+
+		return window
+	end
+
+	local function RenderTabs(animated)
+		if not dock.TabsVisible then
+			for _, tab in ipairs(dock.Tabs) do
+				if tab.Button then
+					Tween(tab.Button, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+						Position = UDim2.new(0, OrbCenterX + 14, 0.5, 0),
+						BackgroundTransparency = 1,
+						TextTransparency = 1,
+						Rotation = 0
+					})
+
+					Tween(tab.Scale, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+						Scale = 0.35
+					})
+
+					if tab.Outline then
+						tab.Outline.Transparency = 1
+					end
+
+					tab.Glow.Transparency = 1
+
+					if tab.NameLabel then
+						Tween(tab.NameLabel, TweenInfo.new(0.14), {
+							TextTransparency = 1,
+							BackgroundTransparency = 1
+						})
+					end
+
+					if tab.NameStroke then
+						Tween(tab.NameStroke, TweenInfo.new(0.14), {
+							Transparency = 1
+						})
+					end
+				end
+			end
+
+			return
+		end
+
+		local visibleWindow = GetVisibleWindow()
+		local visibleMap = {}
+
+		for _, data in ipairs(visibleWindow) do
+			visibleMap[data.Tab] = data
+		end
+
+		for _, tab in ipairs(dock.Tabs) do
+			if tab.Button then
+				local data = visibleMap[tab]
+
+				if data then
+					local angle = SlotAngles[data.Slot] or 0
+					local isActive = dock.CurrentTab == tab
+
+					tab.Button.Visible = true
+
+					Tween(tab.Button, TweenInfo.new(animated and 0.24 or 0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+						Position = GetTabPositionByAngle(angle),
+						Rotation = angle * 0.08,
+						BackgroundTransparency = 0,
+						TextTransparency = 0
+					})
+
+					if tab.NameLabel then
+						tab.NameLabel.Text = tab.Name
+						tab.NameLabel.Visible = true
+
+						Tween(tab.NameLabel, TweenInfo.new(animated and 0.22 or 0.14), {
+							TextTransparency = 0,
+							BackgroundTransparency = 0.12
+						})
+					end
+
+					if tab.NameStroke then
+						Tween(tab.NameStroke, TweenInfo.new(animated and 0.22 or 0.14), {
+							Transparency = 0.72
+						})
+					end
+
+					if tab.Outline then
+						tab.Outline.Transparency = 0.55
+					end
+
+					if isActive then
+						ForceActiveTab(tab)
+					else
+						tab.Button.BackgroundColor3 = Library.Theme.TabDark
+						tab.Button.TextColor3 = Library.Theme.Text
+						tab.Glow.Transparency = 1
+
+						Tween(tab.Scale, TweenInfo.new(animated and 0.24 or 0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+							Scale = 1
+						})
+					end
+				else
+					local tabIndex = table.find(dock.Tabs, tab) or 1
+					local startIndex = math.floor(dock.ScrollOffset) + 1
+
+					local hideAngle
+					if tabIndex < startIndex then
+						hideAngle = SlotAngles[1] - 36
+					else
+						hideAngle = SlotAngles[#SlotAngles] + 36
+					end
+
+					Tween(tab.Button, TweenInfo.new(0.18), {
+						Position = GetTabPositionByAngle(hideAngle),
+						BackgroundTransparency = 1,
+						TextTransparency = 1,
+						Rotation = hideAngle * 0.08
+					})
+
+					if tab.NameLabel then
+						Tween(tab.NameLabel, TweenInfo.new(0.14), {
+							TextTransparency = 1,
+							BackgroundTransparency = 1
+						})
+					end
+
+					if tab.NameStroke then
+						Tween(tab.NameStroke, TweenInfo.new(0.14), {
+							Transparency = 1
+						})
+					end
+
+					Tween(tab.Scale, TweenInfo.new(0.16), {
+						Scale = 0.55
+					})
+
+					if tab.Outline then
+						tab.Outline.Transparency = 1
+					end
+
+					tab.Glow.Transparency = 1
+				end
+			end
+		end
+	end
+
+	local function ScrollTabs(direction)
+		if #dock.Tabs <= dock.VisibleTabs then
+			return
+		end
+
+		local maxOffset = GetMaxScrollOffset()
+
+		local newOffset = math.clamp(
+			dock.ScrollOffset + direction,
+			0,
+			maxOffset
+		)
+
+		if newOffset == dock.ScrollOffset then
+			return
+		end
+
+		dock.ScrollOffset = newOffset
+		RenderTabs(true)
+	end
+
+	local function EnsureTabCentered(tab)
+		local tabIndex = table.find(dock.Tabs, tab)
+		if not tabIndex then
+			return
+		end
+
+		local maxOffset = GetMaxScrollOffset()
+		local centerSlot = math.floor(dock.VisibleTabs / 2)
+		local wantedOffset = (tabIndex - 1) - centerSlot
+
+		dock.ScrollOffset = math.clamp(wantedOffset, 0, maxOffset)
+	end
+
+	local function SelectTab(tab)
+		if dock.CurrentTab == tab and dock.PanelOpen then
+			dock.LastOpenTab = nil
+			ClosePanel()
+			RenderTabs(false)
+			return
+		end
+
+		EnsureTabCentered(tab)
+		RenderTabs(true)
+
+		OpenPanel()
+
+		dock.CurrentTab = tab
+		dock.LastOpenTab = tab
+		PageTitle.Text = tab.Name
+		ClearContent()
+
+		for _, other in ipairs(dock.Tabs) do
+			if other.Button then
+				other.Button.BackgroundColor3 = Library.Theme.TabDark
+				other.Button.TextColor3 = Library.Theme.Text
+				other.Glow.Transparency = 1
+
+				Tween(other.Scale, TweenInfo.new(0.14), {
+					Scale = 1
+				})
+			end
+		end
+
+		ForceActiveTab(tab)
+
+		for _, createItem in ipairs(tab.Items) do
+			createItem()
+		end
+
+		RenderTabs(false)
+	end
+
+	local function SetTabsVisible(value)
+		dock.TabsVisible = value
+		RenderTabs(true)
+	end
+
+	local function ToggleTabs()
+		local newState = not dock.TabsVisible
+
+		if not newState then
+			if dock.CurrentTab and dock.PanelOpen then
+				dock.LastOpenTab = dock.CurrentTab
+			end
+
+			SetTabsVisible(false)
+			ClosePanel()
+		else
+			SetTabsVisible(true)
+
+			if dock.LastOpenTab then
+				task.delay(0.12, function()
+					if dock.TabsVisible and dock.LastOpenTab then
+						SelectTab(dock.LastOpenTab)
+					end
+				end)
+			end
+		end
+	end
+
+	local LastWheelTime = 0
+	local WheelCooldown = 0.08
+
+	UserInputService.InputChanged:Connect(function(input)
+		if not dock.TabsVisible then
+			return
+		end
+
+		if input.UserInputType ~= Enum.UserInputType.MouseWheel then
+			return
+		end
+
+		local now = os.clock()
+		if now - LastWheelTime < WheelCooldown then
+			return
+		end
+
+		local mouse = UserInputService:GetMouseLocation()
+		local pos = OrbArea.AbsolutePosition
+		local size = OrbArea.AbsoluteSize
+
+		local insideOrbArea =
+			mouse.X >= pos.X and
+			mouse.X <= pos.X + size.X and
+			mouse.Y >= pos.Y and
+			mouse.Y <= pos.Y + size.Y
+
+		if not insideOrbArea then
+			return
+		end
+
+		LastWheelTime = now
+
+		if input.Position.Z > 0 then
+			ScrollTabs(-1)
+		elseif input.Position.Z < 0 then
+			ScrollTabs(1)
+		end
+	end)
+
+	Orb.MouseEnter:Connect(function()
+		Tween(OrbScale, TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Scale = 1.06
+		})
+	end)
+
+	Orb.MouseLeave:Connect(function()
+		Tween(OrbScale, TweenInfo.new(0.14), {
+			Scale = 1
+		})
+	end)
+
+	Orb.MouseButton1Click:Connect(ToggleTabs)
+	OrbHitbox.MouseButton1Click:Connect(ToggleTabs)
+
+	function dock:CreateTab(tabOptions)
+		tabOptions = tabOptions or {}
+
+		local tab = {}
+		tab.Name = tabOptions.Name or "Tab"
+		tab.Icon = tabOptions.Icon or "?"
+		tab.Items = {}
+
+		local Button = Instance.new("TextButton")
+		Button.Name = tab.Name
+		Button.AnchorPoint = Vector2.new(0.5, 0.5)
+		Button.Position = UDim2.new(0, OrbCenterX + 14, 0.5, 0)
+		Button.Size = UDim2.new(0, 44, 0, 44)
+		Button.BackgroundColor3 = Library.Theme.TabDark
+		Button.BackgroundTransparency = 1
+		Button.BorderSizePixel = 0
+		Button.Text = tab.Icon
+		Button.TextColor3 = Library.Theme.Text
+		Button.TextTransparency = 1
+		Button.TextSize = 17
+		Button.Font = Library.Theme.BoldFont
+		Button.AutoButtonColor = false
+		Button.Visible = true
+		Button.ZIndex = 170
+		Button.Parent = TabLayer
+
+		local TabNameLabel = Instance.new("TextLabel")
+		TabNameLabel.Name = "TabNameLabel"
+		TabNameLabel.AnchorPoint = Vector2.new(0, 0.5)
+		TabNameLabel.Position = UDim2.new(1, 8, 0.5, 0)
+		TabNameLabel.Size = UDim2.new(0, 92, 0, 22)
+		TabNameLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+		TabNameLabel.BackgroundTransparency = 1
+		TabNameLabel.BorderSizePixel = 0
+		TabNameLabel.Font = Library.Theme.BoldFont
+		TabNameLabel.Text = tab.Name
+		TabNameLabel.TextColor3 = Library.Theme.Text
+		TabNameLabel.TextTransparency = 1
+		TabNameLabel.TextSize = 11
+		TabNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		TabNameLabel.ZIndex = 171
+		TabNameLabel.Parent = Button
+
+		Corner(TabNameLabel, 4)
+		Padding(TabNameLabel, 7)
+
+		local TabNameStroke = Stroke(TabNameLabel, Color3.fromRGB(255, 255, 255), 1, 1)
+
+		Corner(Button, 999)
+		local Outline = Stroke(Button, Color3.fromRGB(255, 255, 255), 1, 0.55)
+
+		local Glow = Instance.new("UIStroke")
+		Glow.Name = "Glow"
+		Glow.Color = Color3.fromRGB(255, 255, 255)
+		Glow.Thickness = 2
+		Glow.Transparency = 1
+		Glow.Parent = Button
+
+		local Scale = Instance.new("UIScale")
+		Scale.Scale = 0.35
+		Scale.Parent = Button
+
+		Button.MouseEnter:Connect(function()
+			if dock.CurrentTab == tab then
+				ForceActiveTab(tab)
+				return
+			end
+
+			Tween(Scale, TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Scale = 1.08
+			})
+
+			Tween(Button, TweenInfo.new(0.14), {
+				BackgroundColor3 = Library.Theme.TabHover
+			})
+		end)
+
+		Button.MouseLeave:Connect(function()
+			if dock.CurrentTab == tab then
+				ForceActiveTab(tab)
+				return
+			end
+
+			Tween(Scale, TweenInfo.new(0.14), {
+				Scale = 1
+			})
+
+			Tween(Button, TweenInfo.new(0.14), {
+				BackgroundColor3 = Library.Theme.TabDark
+			})
+		end)
+
+		Button.MouseButton1Click:Connect(function()
+			SelectTab(tab)
+		end)
+
+		tab.Button = Button
+		tab.Scale = Scale
+		tab.Glow = Glow
+		tab.Outline = Outline
+		tab.NameLabel = TabNameLabel
+		tab.NameStroke = TabNameStroke
+
+		function tab:CreateButton(itemOptions)
+			itemOptions = itemOptions or {}
+
+			table.insert(self.Items, function()
+				local hasImage = itemOptions.Image or itemOptions.Icon
+
+				local card = Instance.new("TextButton")
+				card.Name = itemOptions.Title or "Button"
+				card.Size = UDim2.new(1, 0, 0, 62)
+				card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				card.BorderSizePixel = 0
+				card.AutoButtonColor = false
+				card.Text = ""
+				card.ZIndex = 12
+				card.Parent = Content
+
+				Corner(card, 12)
+				local cardGradient = Gradient(card, Library.Theme.CardDark, Library.Theme.CardLight, 68)
+				Stroke(card, Color3.fromRGB(255, 255, 255), 1, 0.72)
+
+				if hasImage then
+					local imageObject = Instance.new("ImageLabel")
+					imageObject.Name = "ButtonImage"
+					imageObject.AnchorPoint = Vector2.new(0, 0.5)
+					imageObject.Position = UDim2.new(0, 13, 0.5, 0)
+					imageObject.Size = UDim2.new(0, itemOptions.ImageSize or 34, 0, itemOptions.ImageSize or 34)
+					imageObject.BackgroundTransparency = 1
+					imageObject.Image = tostring(itemOptions.Image or itemOptions.Icon)
+					imageObject.ImageColor3 = itemOptions.ImageColor or Color3.fromRGB(255, 255, 255)
+					imageObject.ImageTransparency = itemOptions.ImageTransparency or 0
+					imageObject.ScaleType = Enum.ScaleType.Fit
+					imageObject.ZIndex = 13
+					imageObject.Parent = card
+				end
+
+				local textLeft = hasImage and 58 or 13
+
+				local title = Instance.new("TextLabel")
+				title.BackgroundTransparency = 1
+				title.Position = UDim2.new(0, textLeft, 0, 10)
+				title.Size = UDim2.new(1, -(textLeft + 13), 0, 20)
+				title.Font = Library.Theme.BoldFont
+				title.Text = itemOptions.Title or "Button"
+				title.TextColor3 = Library.Theme.Text
+				title.TextSize = 13
+				title.TextXAlignment = Enum.TextXAlignment.Left
+				title.ZIndex = 13
+				title.Parent = card
+
+				local desc = Instance.new("TextLabel")
+				desc.BackgroundTransparency = 1
+				desc.Position = UDim2.new(0, textLeft, 0, 33)
+				desc.Size = UDim2.new(1, -(textLeft + 13), 0, 17)
+				desc.Font = Library.Theme.Font
+				desc.Text = itemOptions.Description or "Runs an action."
+				desc.TextColor3 = Library.Theme.Muted
+				desc.TextSize = 10
+				desc.TextXAlignment = Enum.TextXAlignment.Left
+				desc.ZIndex = 13
+				desc.Parent = card
+
+				card.MouseEnter:Connect(function()
+					cardGradient.Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, Library.Theme.CardHover),
+						ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 80, 80))
+					})
+				end)
+
+				card.MouseLeave:Connect(function()
+					cardGradient.Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, Library.Theme.CardDark),
+						ColorSequenceKeypoint.new(1, Library.Theme.CardLight)
+					})
+				end)
+
+				card.MouseButton1Click:Connect(function()
+					if itemOptions.Callback then
+						itemOptions.Callback()
+					end
+				end)
+			end)
+		end
+
+		function tab:CreateToggle(itemOptions)
+			itemOptions = itemOptions or {}
+			local state = itemOptions.Default or false
+
+			table.insert(self.Items, function()
+				local card = CreateCard(Content, 66)
+				card.ZIndex = 12
+				card.Active = true
+
+				local title = Instance.new("TextLabel")
+				title.BackgroundTransparency = 1
+				title.Position = UDim2.new(0, 13, 0, 9)
+				title.Size = UDim2.new(1, -86, 0, 20)
+				title.Font = Library.Theme.BoldFont
+				title.Text = itemOptions.Title or "Toggle"
+				title.TextColor3 = Library.Theme.Text
+				title.TextSize = 13
+				title.TextXAlignment = Enum.TextXAlignment.Left
+				title.ZIndex = 13
+				title.Parent = card
+
+				local desc = Instance.new("TextLabel")
+				desc.BackgroundTransparency = 1
+				desc.Position = UDim2.new(0, 13, 0, 32)
+				desc.Size = UDim2.new(1, -26, 0, 17)
+				desc.Font = Library.Theme.Font
+				desc.Text = itemOptions.Description or "Toggle setting."
+				desc.TextColor3 = Library.Theme.Muted
+				desc.TextSize = 10
+				desc.TextXAlignment = Enum.TextXAlignment.Left
+				desc.ZIndex = 13
+				desc.Parent = card
+
+				local switch = Instance.new("TextButton")
+				switch.AnchorPoint = Vector2.new(1, 0.5)
+				switch.Position = UDim2.new(1, -13, 0.5, 0)
+				switch.Size = UDim2.new(0, 48, 0, 24)
+				switch.BackgroundColor3 = state and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(35, 35, 35)
+				switch.BorderSizePixel = 0
+				switch.Text = ""
+				switch.AutoButtonColor = false
+				switch.ZIndex = 13
+				switch.Parent = card
+
+				Corner(switch, 999)
+				Stroke(switch, Color3.fromRGB(255, 255, 255), 1, 0.72)
+
+				local knob = Instance.new("Frame")
+				knob.Size = UDim2.new(0, 18, 0, 18)
+				knob.Position = state and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+				knob.BackgroundColor3 = state and Color3.fromRGB(0, 0, 0) or Color3.fromRGB(255, 255, 255)
+				knob.BorderSizePixel = 0
+				knob.ZIndex = 14
+				knob.Parent = switch
+
+				Corner(knob, 999)
+
+				local lastToggle = 0
+
+				local function Set(value)
+					state = value
+
+					Tween(switch, TweenInfo.new(0.2), {
+						BackgroundColor3 = state and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(35, 35, 35)
+					})
+
+					Tween(knob, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+						Position = state and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9),
+						BackgroundColor3 = state and Color3.fromRGB(0, 0, 0) or Color3.fromRGB(255, 255, 255)
+					})
+
+					if itemOptions.Callback then
+						itemOptions.Callback(state)
+					end
+				end
+
+				local function Toggle()
+					local now = os.clock()
+					if now - lastToggle < 0.06 then
+						return
+					end
+
+					lastToggle = now
+					Set(not state)
+				end
+
+				switch.MouseButton1Click:Connect(Toggle)
+
+				card.InputBegan:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+						Toggle()
+					end
+				end)
+			end)
+		end
+
+		function tab:CreateTextbox(itemOptions)
+			itemOptions = itemOptions or {}
+
+			table.insert(self.Items, function()
+				local holder = CreateCard(Content, 68)
+				holder.ZIndex = 12
+
+				local label = Instance.new("TextLabel")
+				label.BackgroundTransparency = 1
+				label.Position = UDim2.new(0, 13, 0, 7)
+				label.Size = UDim2.new(1, -26, 0, 17)
+				label.Font = Library.Theme.BoldFont
+				label.Text = itemOptions.Title or "Textbox"
+				label.TextColor3 = Library.Theme.Text
+				label.TextSize = 12
+				label.TextXAlignment = Enum.TextXAlignment.Left
+				label.ZIndex = 13
+				label.Parent = holder
+
+				local box = Instance.new("TextBox")
+				box.Position = UDim2.new(0, 13, 0, 31)
+				box.Size = UDim2.new(1, -26, 0, 27)
+				box.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+				box.BorderSizePixel = 0
+				box.ClearTextOnFocus = false
+				box.PlaceholderText = itemOptions.Placeholder or "Type here..."
+				box.Text = itemOptions.Default or ""
+				box.Font = Library.Theme.Font
+				box.TextColor3 = Library.Theme.Text
+				box.PlaceholderColor3 = Library.Theme.Muted
+				box.TextSize = 11
+				box.TextXAlignment = Enum.TextXAlignment.Left
+				box.ZIndex = 13
+				box.Parent = holder
+
+				Corner(box, 10)
+				Padding(box, 9)
+				Stroke(box, Color3.fromRGB(255, 255, 255), 1, 0.82)
+
+				box.FocusLost:Connect(function(enterPressed)
+					if itemOptions.Callback then
+						itemOptions.Callback(box.Text, enterPressed)
+					end
+				end)
+			end)
+		end
+
+		function tab:CreateAnimationCatalog()
+			local hasLoaded = false
+			local isLoading = false
+			local allAnimations = {}
+			local filteredAnimations = {}
+
+			table.insert(self.Items, function()
+				local search = Instance.new("TextBox")
+				search.Size = UDim2.new(1, 0, 0, 34)
+				search.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+				search.BorderSizePixel = 0
+				search.ClearTextOnFocus = false
+				search.PlaceholderText = "Search animation packs..."
+				search.Text = ""
+				search.Font = Library.Theme.Font
+				search.TextColor3 = Library.Theme.Text
+				search.PlaceholderColor3 = Library.Theme.Muted
+				search.TextSize = 11
+				search.TextXAlignment = Enum.TextXAlignment.Left
+				search.ZIndex = 13
+				search.Parent = Content
+
+				Corner(search, 8)
+				Padding(search, 9)
+				Stroke(search, Color3.fromRGB(255, 255, 255), 1, 0.82)
+
+				local statusCard = CreateCard(Content, 62)
+				statusCard.ZIndex = 12
+
+				local statusTitle = Instance.new("TextLabel")
+				statusTitle.BackgroundTransparency = 1
+				statusTitle.Position = UDim2.new(0, 13, 0, 10)
+				statusTitle.Size = UDim2.new(1, -26, 0, 20)
+				statusTitle.Font = Library.Theme.BoldFont
+				statusTitle.Text = hasLoaded and "Animations Loaded" or "Loading Animations..."
+				statusTitle.TextColor3 = Library.Theme.Text
+				statusTitle.TextSize = 13
+				statusTitle.TextXAlignment = Enum.TextXAlignment.Left
+				statusTitle.ZIndex = 13
+				statusTitle.Parent = statusCard
+
+				local statusDesc = Instance.new("TextLabel")
+				statusDesc.BackgroundTransparency = 1
+				statusDesc.Position = UDim2.new(0, 13, 0, 33)
+				statusDesc.Size = UDim2.new(1, -26, 0, 17)
+				statusDesc.Font = Library.Theme.Font
+				statusDesc.Text = hasLoaded and (tostring(#allAnimations) .. " animation packs ready.") or "Fetching catalog..."
+				statusDesc.TextColor3 = Library.Theme.Muted
+				statusDesc.TextSize = 10
+				statusDesc.TextXAlignment = Enum.TextXAlignment.Left
+				statusDesc.ZIndex = 13
+				statusDesc.Parent = statusCard
+
+				local holder = Instance.new("Frame")
+				holder.Size = UDim2.new(1, 0, 0, 1)
+				holder.BackgroundTransparency = 1
+				holder.ZIndex = 12
+				holder.Parent = Content
+
+				local holderLayout = Instance.new("UIListLayout")
+				holderLayout.Padding = UDim.new(0, 8)
+				holderLayout.SortOrder = Enum.SortOrder.LayoutOrder
+				holderLayout.Parent = holder
+
+				local renderToken = 0
+
+				local function updateHolderSize()
+					task.defer(function()
+						if holder and holder.Parent then
+							holder.Size = UDim2.new(1, 0, 0, holderLayout.AbsoluteContentSize.Y)
+						end
+					end)
+				end
+
+				local function clearHolder()
+					renderToken += 1
+
+					for _, child in ipairs(holder:GetChildren()) do
+						if not child:IsA("UIListLayout") then
+							child:Destroy()
+						end
+					end
+
+					updateHolderSize()
+				end
+
+				local function filterAnimations()
+					local term = string.lower(search.Text or "")
+					filteredAnimations = {}
+
+					for _, item in ipairs(allAnimations) do
+						local name = string.lower(tostring(item.Name or ""))
+						local id = tostring(item.Id or "")
+
+						if term == "" or name:find(term, 1, true) or id:find(term, 1, true) then
+							table.insert(filteredAnimations, item)
+						end
+					end
+				end
+
+				local function createAnimationCard(item, index, token)
+					local card = Instance.new("TextButton")
+					card.Name = tostring(item.Name or "Animation")
+					card.Size = UDim2.new(1, 0, 0, 104)
+					card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					card.BorderSizePixel = 0
+					card.AutoButtonColor = false
+					card.Text = ""
+					card.ZIndex = 12
+					card.Parent = holder
+
+					Corner(card, 12)
+					local cardGradient = Gradient(card, Library.Theme.CardDark, Library.Theme.CardLight, 68)
+					Stroke(card, Color3.fromRGB(255, 255, 255), 1, 0.72)
+
+					local viewport, world, stateLabel = CreateViewport(card)
+
+					local title = Instance.new("TextLabel")
+					title.BackgroundTransparency = 1
+					title.Position = UDim2.new(0, 104, 0, 13)
+					title.Size = UDim2.new(1, -118, 0, 22)
+					title.Font = Library.Theme.BoldFont
+					title.Text = tostring(item.Name or "Animation")
+					title.TextColor3 = Library.Theme.Text
+					title.TextSize = 14
+					title.TextXAlignment = Enum.TextXAlignment.Left
+					title.ZIndex = 13
+					title.Parent = card
+
+					local desc = Instance.new("TextLabel")
+					desc.BackgroundTransparency = 1
+					desc.Position = UDim2.new(0, 104, 0, 38)
+					desc.Size = UDim2.new(1, -118, 0, 34)
+					desc.Font = Library.Theme.Font
+					desc.Text = "ID: " .. tostring(item.Id or "?")
+					desc.TextColor3 = Library.Theme.Muted
+					desc.TextSize = 10
+					desc.TextWrapped = true
+					desc.TextXAlignment = Enum.TextXAlignment.Left
+					desc.TextYAlignment = Enum.TextYAlignment.Top
+					desc.ZIndex = 13
+					desc.Parent = card
+
+					local action = Instance.new("TextLabel")
+					action.AnchorPoint = Vector2.new(1, 1)
+					action.Position = UDim2.new(1, -13, 1, -12)
+					action.Size = UDim2.new(0, 64, 0, 22)
+					action.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					action.BorderSizePixel = 0
+					action.Font = Library.Theme.BoldFont
+					action.Text = "APPLY"
+					action.TextColor3 = Color3.fromRGB(0, 0, 0)
+					action.TextSize = 9
+					action.ZIndex = 13
+					action.Parent = card
+
+					Corner(action, 4)
+
+					card.MouseEnter:Connect(function()
+						cardGradient.Color = ColorSequence.new({
+							ColorSequenceKeypoint.new(0, Library.Theme.CardHover),
+							ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 80, 80))
+						})
+					end)
+
+					card.MouseLeave:Connect(function()
+						cardGradient.Color = ColorSequence.new({
+							ColorSequenceKeypoint.new(0, Library.Theme.CardDark),
+							ColorSequenceKeypoint.new(1, Library.Theme.CardLight)
+						})
+					end)
+
+					card.MouseButton1Click:Connect(function()
+						ApplyAnimationPack(item)
+					end)
+
+					task.delay(index * 0.12, function()
+						if renderToken ~= token or not card.Parent then
+							return
+						end
+
+						stateLabel.Text = "Loading"
+
+						local dummy = CreateGrayDummy(world)
+
+						if not dummy then
+							stateLabel.Text = "No Dummy"
+							return
+						end
+
+						local mappings = ResolveAnimationMappings(item)
+						local order = {"idle", "walk", "run", "jump", "fall", "climb", "swim"}
+
+						task.spawn(function()
+							while renderToken == token and card.Parent and dummy.Parent do
+								for _, category in ipairs(order) do
+									if renderToken ~= token or not card.Parent or not dummy.Parent then
+										break
+									end
+
+									local chosen = nil
+
+									for _, mapping in ipairs(mappings) do
+										if mapping.category == category then
+											chosen = mapping
+											break
+										end
+									end
+
+									if chosen then
+										PlayPreviewAnimation(
+											dummy,
+											chosen.animationId,
+											stateLabel,
+											category:sub(1, 1):upper() .. category:sub(2),
+											2
+										)
+									else
+										stateLabel.Text = category:sub(1, 1):upper() .. category:sub(2)
+										task.wait(2)
+									end
+								end
+							end
+						end)
+					end)
+				end
+
+				local function renderAnimations()
+					clearHolder()
+					filterAnimations()
+
+					local token = renderToken
+
+					for index, item in ipairs(filteredAnimations) do
+						createAnimationCard(item, index, token)
+					end
+
+					updateHolderSize()
+				end
+
+				search:GetPropertyChangedSignal("Text"):Connect(function()
+					if hasLoaded then
+						renderAnimations()
+					end
+				end)
+
+				if hasLoaded then
+					renderAnimations()
+					return
+				end
+
+				if isLoading then
+					statusTitle.Text = "Loading Animations..."
+					statusDesc.Text = "Already fetching catalog."
+					return
+				end
+
+				isLoading = true
+				Library:Notify("Loading animations...", Color3.fromRGB(255, 255, 255), "info")
+
+				task.spawn(function()
+					allAnimations = FetchAllAnimationPacks()
+					hasLoaded = true
+					isLoading = false
+
+					if statusTitle and statusTitle.Parent then
+						statusTitle.Text = "Animations Loaded"
+					end
+
+					if statusDesc and statusDesc.Parent then
+						statusDesc.Text = tostring(#allAnimations) .. " animation packs loaded."
+					end
+
+					renderAnimations()
+
+					Library:Notify("Loaded " .. tostring(#allAnimations) .. " animations.", Color3.fromRGB(255, 255, 255), "check")
+				end)
+			end)
+		end
+
+		table.insert(self.Tabs, tab)
+		RenderTabs(false)
+
+		return tab
+	end
+
+	function dock:Destroy()
+		Root:Destroy()
+	end
+
+	function dock:Notify(...)
+		Library:Notify(...)
+	end
+
+	return dock
+end
+
+--// ============================================================
+--// USAGE
+--// ============================================================
+
+local Dock = Library:CreateHalfDock({
+	Title = "LunarLua",
+	VisibleTabs = 5,
+	Position = UDim2.new(0, 0, 0.5, 0)
+})
+
+local Main = Dock:CreateTab({ Name = "Main", Icon = "⌂" })
+local Player = Dock:CreateTab({ Name = "Player", Icon = "◇" })
+local Visuals = Dock:CreateTab({ Name = "Visuals", Icon = "◉" })
+local Command = Dock:CreateTab({ Name = "Command", Icon = ">" })
+local Animations = Dock:CreateTab({ Name = "Animations", Icon = "◎" })
+local Settings = Dock:CreateTab({ Name = "Settings", Icon = "⚙" })
+local Info = Dock:CreateTab({ Name = "Info", Icon = "i" })
+local Theme = Dock:CreateTab({ Name = "Theme", Icon = "✦" })
+local Extra = Dock:CreateTab({ Name = "Extra", Icon = "+" })
+
+Main:CreateButton({
+	Title = "Test Notification",
+	Description = "Shows a LunarLua notification.",
+	Image = "rbxassetid://11780939099",
+	ImageColor = Color3.fromRGB(255, 255, 255),
+	Callback = function()
+		Library:Notify("LunarLua notification test.", Color3.fromRGB(255, 255, 255), "check")
+	end
+})
+
+Main:CreateButton({
+	Title = "Quick Action",
+	Description = "A simple placeholder action.",
+	Image = "rbxassetid://11604833061",
+	ImageColor = Color3.fromRGB(255, 255, 255),
+	Callback = function()
+		Library:Notify("Quick action clicked.", Color3.fromRGB(255, 255, 255), "info")
+	end
+})
+
+Player:CreateToggle({
+	Title = "Example Toggle",
+	Description = "Click anywhere on this row to toggle.",
+	Default = false,
+	Callback = function(value)
+		Library:Notify("Toggle: " .. tostring(value), Color3.fromRGB(255, 255, 255), "info")
+	end
+})
+
+Visuals:CreateToggle({
+	Title = "Nametag Visuals",
+	Description = "Placeholder toggle for nametag UI later.",
+	Default = false,
+	Callback = function(value)
+		Library:Notify(value and "Nametags on." or "Nametags off.", Color3.fromRGB(255, 255, 255), value and "check" or "x")
+	end
+})
+
+Command:CreateTextbox({
+	Title = "Command Box",
+	Placeholder = "Type a command and press Enter...",
+	Callback = function(text, enterPressed)
+		if enterPressed then
+			Library:Notify("Command entered: " .. text, Color3.fromRGB(255, 255, 255), "info")
+		end
+	end
+})
+
+Animations:CreateAnimationCatalog()
+
+Settings:CreateButton({
+	Title = "Close UI",
+	Description = "Destroys the LunarLua interface.",
+	Image = "rbxassetid://10002373478",
+	ImageColor = Color3.fromRGB(255, 100, 100),
+	Callback = function()
+		Library:Notify("Closing LunarLua.", Color3.fromRGB(255, 100, 100), "x")
+		task.wait(0.3)
+		ScreenGui:Destroy()
+	end
+})
+
+Info:CreateButton({
+	Title = "Info Card",
+	Description = "This tab tests one-slot scrolling.",
+	Callback = function()
+		Library:Notify("Info clicked.", Color3.fromRGB(255, 255, 255), "info")
+	end
+})
+
+Theme:CreateButton({
+	Title = "Theme Placeholder",
+	Description = "Theme system can be added later.",
+	Callback = function()
+		Library:Notify("Theme clicked.", Color3.fromRGB(255, 255, 255), "info")
+	end
+})
+
+Extra:CreateButton({
+	Title = "Extra Placeholder",
+	Description = "Another scrollable tab.",
+	Callback = function()
+		Library:Notify("Extra clicked.", Color3.fromRGB(255, 255, 255), "check")
+	end
+})
+
+Library:Notify("LunarLua loaded.", Color3.fromRGB(255, 255, 255), "info")
